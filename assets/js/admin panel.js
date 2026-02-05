@@ -8,6 +8,7 @@
 
 state.reviews = Array.isArray(state.reviews) ? state.reviews : [];
 state.adminReviewsSelectedProductId = state.adminReviewsSelectedProductId || null;
+state.adminReviewsListOpen = typeof state.adminReviewsListOpen === 'boolean' ? state.adminReviewsListOpen : true;
 
 // Support filters + selection + quick replies
 state.supportFilter = state.supportFilter || { status: '', priority: '', view: 'all' };
@@ -162,10 +163,10 @@ function openCategoryModal(mode, id = null) {
       selectedProducts: []
     };
   } else {
-    const cat = state.categories.find(c => c.id === id);
+    const cat = (state.categories || []).find(c => c.id === id);
     if (!cat) return;
 
-    const selectedProducts = state.products.filter(p => p.category === id).map(p => p.id);
+    const selectedProducts = (state.products || []).filter(p => p.category === id).map(p => p.id);
 
     state.categoryModal = {
       mode: 'edit',
@@ -196,7 +197,7 @@ function saveCategoryModal() {
     const id = utils.generateId();
     state.categories.push({ id, title });
 
-    state.products.forEach(p => {
+    (state.products || []).forEach(p => {
       if (m.selectedProducts.includes(p.id)) {
         p.category = id;
       }
@@ -204,16 +205,16 @@ function saveCategoryModal() {
 
     toast('دسته‌بندی اضافه شد', 'success');
   } else {
-    const cat = state.categories.find(c => c.id === m.id);
+    const cat = (state.categories || []).find(c => c.id === m.id);
     if (!cat) return;
 
     cat.title = title;
 
-    state.products.forEach(p => {
+    (state.products || []).forEach(p => {
       if (p.category === m.id) p.category = '';
     });
 
-    state.products.forEach(p => {
+    (state.products || []).forEach(p => {
       if (m.selectedProducts.includes(p.id)) {
         p.category = m.id;
       }
@@ -226,7 +227,7 @@ function saveCategoryModal() {
 }
 
 function deleteCategoryWithConfirm(id) {
-  const cat = state.categories.find(c => c.id === id);
+  const cat = (state.categories || []).find(c => c.id === id);
   if (!cat) return;
 
   state.categoryModal = null;
@@ -239,8 +240,8 @@ function deleteCategoryWithConfirm(id) {
     confirmText: 'حذف',
     confirmClass: 'btn-danger',
     onConfirm: () => {
-      state.categories = state.categories.filter(c => c.id !== id);
-      state.products.forEach(p => {
+      state.categories = (state.categories || []).filter(c => c.id !== id);
+      (state.products || []).forEach(p => {
         if (p.category === id) p.category = '';
       });
       state.confirmModal = null;
@@ -254,7 +255,7 @@ function renderCategoryModal() {
   const m = state.categoryModal;
   if (!m) return '';
 
-  const uncategorized = state.products.filter(p => !p.category || p.category === m.id);
+  const uncategorized = (state.products || []).filter(p => !p.category || p.category === m.id);
 
   return `
     <div class="fixed inset-0 z-[200] flex items-center justify-center p-4 modal-overlay">
@@ -362,7 +363,7 @@ function renderAdminCategoriesEditor() {
   return `
     <div class="animate-fade">
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl lg:text-3xl font-black">مدیریت دسته‌بندی‌ها (${state.categories.length})</h1>
+        <h1 class="text-2xl lg:text-3xl font-black">مدیریت دسته‌بندی‌ها (${(state.categories || []).length})</h1>
         <button class="btn-primary px-5 py-3 rounded-xl font-semibold text-sm" type="button" onclick="openCategoryModal('add')">
           افزودن دسته
         </button>
@@ -394,7 +395,7 @@ function renderAdminCategoriesEditor() {
 /* ========== Orders: safe render (handles items array or JSON string) ========== */
 
 function renderAdminOrdersSafe() {
-  let filteredOrders = [...state.orders];
+  let filteredOrders = Array.isArray(state.orders) ? [...state.orders] : [];
   if (state.orderFilter.status) {
     filteredOrders = filteredOrders.filter(o => o.status === state.orderFilter.status);
   }
@@ -503,6 +504,238 @@ function renderAdminOrdersSafe() {
   `;
 }
 
+/* ========== Reviews: per-product management + collapsible drawer ========== */
+
+function getProductById(id) {
+  return (state.products || []).find(p => p.id === id) || null;
+}
+
+function getProductReviews(productId) {
+  return (state.reviews || []).filter(r => r.product_id === productId || r.productId === productId);
+}
+
+function setReviewStatus(reviewId, status) {
+  const r = (state.reviews || []).find(x => x.id === reviewId);
+  if (!r) return;
+  r.status = status;
+  if (window.AppState) AppState.set({ reviews: state.reviews });
+  render();
+}
+
+function deleteReview(reviewId) {
+  state.reviews = (state.reviews || []).filter(r => r.id !== reviewId);
+  if (window.AppState) AppState.set({ reviews: state.reviews });
+  render();
+}
+
+function toggleReviewsListOpen() {
+  state.adminReviewsListOpen = !state.adminReviewsListOpen;
+  render();
+}
+
+function renderAdminReviews() {
+  const products = Array.isArray(state.products) ? state.products : [];
+  const reviews = Array.isArray(state.reviews) ? state.reviews : [];
+
+  // فقط محصولاتی که نظر دارند
+  const productIdsWithReviews = [...new Set(reviews.map(r => r.product_id || r.productId))];
+  const productsWithReviews = products.filter(p => productIdsWithReviews.includes(p.id));
+
+  if (!state.adminReviewsSelectedProductId && productsWithReviews.length > 0) {
+    state.adminReviewsSelectedProductId = productsWithReviews[0].id;
+  }
+
+  const activeProduct =
+    productsWithReviews.find(p => p.id === state.adminReviewsSelectedProductId) || productsWithReviews[0] || null;
+
+  const activeReviews = activeProduct ? getProductReviews(activeProduct.id) : [];
+
+  const pendingCount = activeReviews.filter(r => r.status === 'pending').length;
+
+  const drawerIcon = state.adminReviewsListOpen ? '▼' : '▲';
+
+  return `
+    <div class="animate-fade">
+      <div class="flex items-center justify-between mb-4">
+        <h1 class="text-2xl lg:text-3xl font-black flex items-center gap-2">
+          <span>نظرات کاربران</span>
+          ${
+            pendingCount > 0
+              ? `<span class="badge bg-rose-500/20 text-rose-300 text-xs px-2 py-1 rounded-xl">در انتظار: ${pendingCount}</span>`
+              : ''
+          }
+        </h1>
+
+        <!-- کشوی لیست محصولات: فلش مثلثی -->
+        <button 
+          type="button"
+          class="lg:hidden flex items-center gap-2 text-xs glass px-3 py-1.5 rounded-xl"
+          onclick="toggleReviewsListOpen()"
+        >
+          <span>${drawerIcon}</span>
+          <span>لیست محصولات دارای نظر</span>
+        </button>
+      </div>
+
+      <div class="glass rounded-2xl p-3 lg:p-4 flex flex-col lg:flex-row gap-4 min-h-[380px]">
+
+        <!-- Product list drawer -->
+        <div class="${
+          state.adminReviewsListOpen ? 'block' : 'hidden lg:block'
+        } w-full lg:w-72 lg:max-w-xs flex-shrink-0">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-sm font-semibold text-white/80">محصولات دارای نظر</h2>
+            <span class="text-[11px] text-white/50">${productsWithReviews.length} محصول</span>
+          </div>
+          <div class="max-h-[260px] lg:max-h-[70vh] overflow-y-auto flex flex-col gap-2 pr-1">
+            ${
+              productsWithReviews.length === 0
+                ? `<div class="text-xs text-white/60 px-2 py-3">هنوز نظری ثبت نشده است.</div>`
+                : productsWithReviews
+                    .map(p => {
+                      const count = getProductReviews(p.id).length;
+                      const isActive = activeProduct && activeProduct.id === p.id;
+                      const imgSrc = p.image || p.main_image || '';
+                      return `
+                        <button
+                          type="button"
+                          onclick="state.adminReviewsSelectedProductId='${p.id}'; render()"
+                          class="w-full text-right glass rounded-xl px-3 py-2 flex items-center gap-3 text-xs ${
+                            isActive ? 'border border-violet-500/60 bg-violet-500/10' : ''
+                          }"
+                        >
+                          <div class="w-9 h-9 rounded-lg overflow-hidden bg-white/5 flex items-center justify-center flex-shrink-0">
+                            ${
+                              imgSrc
+                                ? `<img src="${imgSrc}" class="w-full h-full object-cover">`
+                                : `<span class="text-lg">📦</span>`
+                            }
+                          </div>
+                          <div class="flex-1 min-w-0">
+                            <div class="font-semibold line-clamp-1">${p.title}</div>
+                            <div class="text-[10px] text-white/50">${count} نظر</div>
+                          </div>
+                        </button>
+                      `;
+                    })
+                    .join('')
+            }
+          </div>
+        </div>
+
+        <!-- Reviews list + actions -->
+        <div class="flex-1 min-w-0 glass rounded-2xl p-3 lg:p-4">
+          ${
+            !activeProduct
+              ? `<div class="h-full flex items-center justify-center text-sm text-white/60">محصولی با نظر یافت نشد.</div>`
+              : `
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <h2 class="font-bold text-sm lg:text-base line-clamp-1">${activeProduct.title}</h2>
+                <p class="text-[11px] text-white/50 mt-0.5">
+                  ${
+                    (state.categories || []).find(c => c.id === activeProduct.category)?.title ||
+                    'بدون دسته‌بندی'
+                  }
+                </p>
+              </div>
+              <div class="text-[11px] text-white/50">
+                مجموع نظرات: ${activeReviews.length}
+              </div>
+            </div>
+
+            <div class="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+              ${
+                activeReviews.length === 0
+                  ? `<div class="text-xs text-white/60 px-2 py-3">برای این محصول نظری ثبت نشده است.</div>`
+                  : activeReviews
+                      .map(r => {
+                        const status = r.status || 'pending';
+                        const rating = Number(r.rating || 0);
+                        const stars =
+                          rating > 0
+                            ? '⭐'.repeat(Math.min(5, rating))
+                            : 'بدون امتیاز';
+                        const created = utils.formatDateTime(r.created_at || r.createdAt || '');
+                        const name = r.user_name || r.userName || 'کاربر';
+                        const phone = r.user_phone || r.userPhone || '';
+                        const statusLabel =
+                          status === 'approved'
+                            ? 'تایید شده'
+                            : status === 'rejected'
+                            ? 'رد شده'
+                            : 'در انتظار';
+                        const statusClass =
+                          status === 'approved'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : status === 'rejected'
+                            ? 'bg-rose-500/15 text-rose-300'
+                            : 'bg-amber-500/15 text-amber-300';
+
+                        return `
+                          <div class="glass rounded-xl p-3 text-xs flex flex-col gap-2">
+                            <div class="flex items-center justify-between gap-2">
+                              <div class="flex items-center gap-2">
+                                <div class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-[11px]">
+                                  ${name.trim()[0] || 'ک'}
+                                </div>
+                                <div>
+                                  <div class="font-semibold">${name}</div>
+                                  <div class="text-[10px] text-white/50">${phone}</div>
+                                </div>
+                              </div>
+                              <div class="text-right">
+                                <div class="text-[10px] text-white/50 mb-1">${created}</div>
+                                <div class="flex items-center gap-1 justify-end">
+                                  <span class="text-[11px]">${stars}</span>
+                                  <span class="px-2 py-0.5 rounded-xl text-[10px] ${statusClass}">
+                                    ${statusLabel}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="text-[11px] text-white/80 whitespace-pre-line border-t border-white/5 pt-2 mt-1">
+                              ${r.text || r.comment || ''}
+                            </div>
+
+                            <div class="flex items-center justify-end gap-2 pt-1">
+                              <button
+                                type="button"
+                                class="btn-ghost px-3 py-1 rounded-lg text-[11px]"
+                                onclick="setReviewStatus('${r.id}', 'approved')"
+                              >
+                                تایید
+                              </button>
+                              <button
+                                type="button"
+                                class="btn-ghost px-3 py-1 rounded-lg text-[11px]"
+                                onclick="setReviewStatus('${r.id}', 'rejected')"
+                              >
+                                رد
+                              </button>
+                              <button
+                                type="button"
+                                class="btn-ghost px-3 py-1 rounded-lg text-[11px] text-rose-300"
+                                onclick="deleteReview('${r.id}')"
+                              >
+                                حذف
+                              </button>
+                            </div>
+                          </div>
+                        `;
+                      })
+                      .join('')
+              }
+            </div>
+          `
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 /* ========== Support: messenger-style, responsive, urgent + quick replies ========== */
 
 function getTicketMessages(t) {
@@ -570,7 +803,7 @@ function addQuickReply(label, text) {
 }
 
 function deleteQuickReply(id) {
-  state.supportQuickReplies = state.supportQuickReplies.filter(q => q.id !== id);
+  state.supportQuickReplies = (state.supportQuickReplies || []).filter(q => q.id !== id);
   if (window.AppState) AppState.set({ supportQuickReplies: state.supportQuickReplies });
   toast('پاسخ آماده حذف شد', 'success');
   render();
@@ -624,6 +857,25 @@ function renderAdminSupportQuickReplies() {
       </div>
     </div>
   `;
+}
+
+function handleSupportSendMessage(form, ticketId) {
+  event.preventDefault();
+  const text = (form.message.value || '').trim();
+  if (!text) return;
+  const ticket = (state.tickets || []).find(t => t.id === ticketId);
+  if (!ticket) return;
+  addTicketMessage(ticket, { from: 'admin', text }).then(ok => {
+    if (ok) form.reset();
+  });
+}
+
+function applyQuickReplyToTicket(ticketId, replyId) {
+  const ticket = (state.tickets || []).find(t => t.id === ticketId);
+  if (!ticket) return;
+  const reply = (state.supportQuickReplies || []).find(q => q.id === replyId);
+  if (!reply) return;
+  addTicketMessage(ticket, { from: 'admin', text: reply.text });
 }
 
 /* Main support renderer (with scrollable ticket list + chat) */
@@ -764,182 +1016,134 @@ function renderAdminSupportSafe() {
                       const name = t.user_name || 'کاربر';
                       const phone = t.user_phone || '-';
                       const initial = name.trim()[0] || 'ک';
+                      const created = utils.formatDateTime(t.created_at || t.createdAt || '');
+                      const priorityBadge =
+                        priority === 'urgent'
+                          ? '<span class="text-[10px] px-2 py-0.5 rounded-xl bg-rose-500/20 text-rose-300">فوری</span>'
+                          : '<span class="text-[10px] px-2 py-0.5 rounded-xl bg-white/10 text-white/60">عادی</span>';
 
                       return `
-                    <button
-                      type="button"
-                      onclick="state.adminSupportSelectedTicketId='${t.id}'; render()"
-                      class="w-full text-right rounded-xl px-3 py-2 flex items-center gap-3 text-xs transition-all ${
-                        isActive ? 'bg-violet-500/20 border border-violet-400' : 'glass hover:bg-white/5'
-                      }"
-                    >
-                      <div class="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-sm flex-shrink-0">
-                        ${initial}
-                      </div>
-                      <div class="flex-1 min-w-0">
-                        <div class="flex items-center justify-between gap-2 mb-0.5">
-                          <span class="font-semibold line-clamp-1">${name}</span>
-                          <span class="font-mono text-[10px] text-white/50">#${String(t.id || '').slice(-4)}</span>
-                        </div>
-                        <div class="text-[10px] text-white/60 line-clamp-1">${phone}</div>
-                        <div class="flex items-center gap-1 mt-1">
-                          <span class="badge ${t.status === 'open' ? 'badge-processing' : 'badge-delivered'}">
-                            ${t.status === 'open' ? 'باز' : 'بسته'}
-                          </span>
-                          ${
-                            priority === 'urgent'
-                              ? `<span class="badge badge-canceled text-[10px]">فوری</span>`
-                              : ''
-                          }
-                        </div>
-                        ${
-                          lastMsg
-                            ? `<div class="text-[10px] text-white/40 mt-1 line-clamp-1">
-                                 ${(lastMsg.from === 'user' ? 'کاربر: ' : 'پشتیبان: ') + lastMsg.text}
-                               </div>`
-                            : ''
-                        }
-                      </div>
-                    </button>
-                  `;
+                        <button
+                          type="button"
+                          onclick="state.adminSupportSelectedTicketId='${t.id}'; render()"
+                          class="w-full text-right glass rounded-xl px-3 py-2 flex items-center gap-3 text-xs ${
+                            isActive ? 'border border-violet-500/60 bg-violet-500/10' : ''
+                          }"
+                        >
+                          <div class="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
+                            <span class="text-[13px]">${initial}</span>
+                          </div>
+                          <div class="flex-1 min-w-0">
+                            <div class="flex items-center justify-between gap-2 mb-0.5">
+                              <span class="font-semibold line-clamp-1">${name}</span>
+                              ${priorityBadge}
+                            </div>
+                            <div class="text-[10px] text-white/50 line-clamp-1">
+                              ${lastMsg ? lastMsg.text : 'بدون پیام'}
+                            </div>
+                            <div class="text-[9px] text-white/40 mt-0.5">${created}</div>
+                          </div>
+                        </button>
+                      `;
                     })
                     .join('')
             }
           </div>
 
-          <!-- Chat area (scrollable messages) -->
-          <div class="flex-1 glass rounded-2xl p-3 lg:p-4 flex flex-col min-h-[260px] lg:min-h-[360px]">
+          <!-- Chat area -->
+          <div class="flex-1 min-w-0 glass rounded-2xl p-3 lg:p-4 flex flex-col">
             ${
               !activeTicket
                 ? `<div class="flex-1 flex items-center justify-center text-sm text-white/60">تیکتی انتخاب نشده است.</div>`
                 : `
-              <!-- Header -->
-              <div class="flex items-center justify-between gap-3 border-b border-white/10 pb-3 mb-3">
-                <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-sm">
-                    ${(activeTicket.user_name || 'کاربر')[0]}
-                  </div>
-                  <div>
-                    <div class="font-semibold text-sm">${activeTicket.user_name || 'کاربر'}</div>
-                    <div class="text-xs text-white/60 font-mono">${activeTicket.user_phone || '-'}</div>
-                  </div>
+              <div class="flex items-center justify-between mb-3 text-xs">
+                <div>
+                  <div class="font-semibold text-sm">${activeTicket.user_name || 'کاربر'}</div>
+                  <div class="text-[11px] text-white/60">${activeTicket.user_phone || '-'}</div>
                 </div>
-                <div class="flex flex-col items-end gap-1">
-                  <div class="flex gap-1">
-                    <span class="badge ${activeTicket.status === 'open' ? 'badge-processing' : 'badge-delivered'}">
-                      ${activeTicket.status === 'open' ? 'باز' : 'بسته'}
-                    </span>
-                    ${
-                      (activeTicket.priority || 'normal') === 'urgent'
-                        ? `<span class="badge badge-canceled text-[10px]">فوری</span>`
-                        : ''
-                    }
-                  </div>
-                  <div class="flex gap-1">
-                    <button
-                      type="button"
-                      class="btn-ghost text-xs px-2 py-1 rounded-lg"
-                      onclick="updateTicketStatus(state.tickets.find(x=>x.id==='${activeTicket.id}'),'open')"
-                    >
-                      باز
-                    </button>
-                    <button
-                      type="button"
-                      class="btn-ghost text-xs px-2 py-1 rounded-lg"
-                      onclick="closeTicket(state.tickets.find(x=>x.id==='${activeTicket.id}'))"
-                    >
-                      بستن
-                    </button>
-                    <button
-                      type="button"
-                      class="btn-ghost text-xs px-2 py-1 rounded-lg"
-                      onclick="
-                        const t = state.tickets.find(x=>x.id==='${activeTicket.id}');
-                        if(t){ t.priority = (t.priority==='urgent'?'normal':'urgent'); if(window.AppState) AppState.set({tickets: state.tickets}); render(); }
-                      "
-                    >
-                      ${(activeTicket.priority || 'normal') === 'urgent' ? 'عادی کردن' : 'علامت فوری'}
-                    </button>
-                  </div>
+                <div class="flex items-center gap-2">
+                  <select
+                    class="text-[11px] bg-white/5 border border-white/15 rounded-xl px-2 py-1"
+                    onchange="
+                      const t = (state.tickets || []).find(x => x.id === '${activeTicket.id}');
+                      if(t) updateTicketStatus(t, this.value);
+                    "
+                  >
+                    <option value="open" ${activeTicket.status === 'open' ? 'selected' : ''}>باز</option>
+                    <option value="closed" ${activeTicket.status === 'closed' ? 'selected' : ''}>بسته</option>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn-ghost px-3 py-1 rounded-lg text-[11px]"
+                    onclick="
+                      const t = (state.tickets || []).find(x => x.id === '${activeTicket.id}');
+                      if(t) closeTicket(t);
+                    "
+                  >
+                    بستن تیکت
+                  </button>
                 </div>
               </div>
 
-              <!-- Messages (scrollable, desktop & mobile friendly) -->
-              <div class="flex-1 overflow-y-auto max-h-[260px] lg:max-h-[55vh] space-y-2 pr-1">
+              <div class="flex-1 min-h-0 max-h-[260px] lg:max-h-[60vh] overflow-y-auto mb-3 space-y-2 pr-1">
                 ${
                   activeMessages.length === 0
-                    ? `<div class="text-xs text-white/60">پیامی ثبت نشده است.</div>`
+                    ? `<div class="text-xs text-white/60 px-2 py-3">هنوز پیامی در این تیکت ثبت نشده است.</div>`
                     : activeMessages
                         .map(m => {
-                          const isUser = m.from === 'user';
-                          const isAI = m.from === 'ai';
-                          const side = isUser ? 'items-start' : 'items-end';
+                          const isAdmin = m.from === 'admin';
+                          const align = isAdmin ? 'items-end' : 'items-start';
                           const bubble =
-                            isUser
-                              ? 'bg-white/10 text-white'
-                              : isAI
-                              ? 'bg-violet-500/20 text-violet-100'
-                              : 'bg-emerald-500/20 text-emerald-100';
-                          const label = isUser ? 'کاربر' : isAI ? 'AI' : 'پشتیبان';
-
+                            isAdmin
+                              ? 'bg-violet-500/30 text-white border border-violet-400/40'
+                              : 'bg-white/10 text-white border border-white/10';
+                          const time = utils.formatDateTime(m.at || m.created_at || '');
                           return `
-                          <div class="flex ${side}">
-                            <div class="max-w-[85%] rounded-2xl px-3 py-2 text-xs ${bubble}">
-                              <div class="font-bold mb-0.5">${label}</div>
-                              <div class="whitespace-pre-line leading-relaxed">${m.text}</div>
-                              <div class="text-[10px] text-white/40 mt-1">
-                                ${utils && utils.formatDateTime ? utils.formatDateTime(m.at) : (m.at || '')}
+                            <div class="flex ${align}">
+                              <div class="max-w-[80%] glass rounded-2xl px-3 py-2 text-xs ${bubble}">
+                                <div class="whitespace-pre-line">${m.text}</div>
+                                <div class="text-[9px] text-white/60 mt-1 text-left">${time}</div>
                               </div>
                             </div>
-                          </div>
-                        `;
+                          `;
                         })
                         .join('')
                 }
               </div>
 
-              <!-- Quick replies + input -->
-              <div class="mt-3 space-y-2">
-                <div class="flex flex-wrap gap-2 max-h-16 overflow-y-auto">
-                  ${
-                    (state.supportQuickReplies || [])
-                      .map(
-                        q => `
-                    <button
-                      type="button"
-                      class="px-3 py-1 rounded-xl text-[11px] glass hover:bg-white/10"
-                      onclick="
-                        const el = document.getElementById('admin-support-input-${activeTicket.id}');
-                        if(el){ el.value = (el.value ? el.value + ' ' : '') + ${JSON.stringify(q.text)}; el.focus(); }
-                      "
-                    >
-                      ${q.label}
-                    </button>
-                  `
-                      )
-                      .join('')
-                  }
-                </div>
-                <form
-                  class="flex gap-2"
-                  onsubmit="
-                    event.preventDefault();
-                    const input = document.getElementById('admin-support-input-${activeTicket.id}');
-                    const val = input ? input.value : '';
-                    addTicketMessage(state.tickets.find(x=>x.id==='${activeTicket.id}'), { from:'admin', text: val }).then(ok=>{
-                      if(ok && input){ input.value=''; }
-                    });
-                  "
-                >
-                  <input
-                    id="admin-support-input-${activeTicket.id}"
-                    class="flex-1 input-style text-sm"
-                    placeholder="پاسخ پشتیبان..."
-                    autocomplete="off"
+              <form
+                class="mt-auto pt-2 border-t border-white/10 space-y-2"
+                onsubmit="handleSupportSendMessage(this, '${activeTicket.id}')"
+              >
+                <div class="flex items-center gap-2">
+                  <select
+                    class="text-[11px] bg-white/5 border border-white/15 rounded-xl px-2 py-1"
+                    onchange="if(this.value){ applyQuickReplyToTicket('${activeTicket.id}', this.value); this.value=''; }"
                   >
-                  <button class="btn-success px-4 rounded-xl text-sm" type="submit">ارسال</button>
-                </form>
-              </div>
+                    <option value="">پاسخ آماده...</option>
+                    ${
+                      (state.supportQuickReplies || [])
+                        .map(q => `<option value="${q.id}">${q.label}</option>`)
+                        .join('')
+                    }
+                  </select>
+                  <span class="text-[10px] text-white/40">برای درج سریع پاسخ آماده</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <textarea
+                    name="message"
+                    rows="1"
+                    class="flex-1 input-style resize-none text-xs"
+                    placeholder="نوشتن پاسخ..."
+                  ></textarea>
+                  <button
+                    type="submit"
+                    class="btn-primary px-4 py-2 rounded-xl text-xs font-semibold"
+                  >
+                    ارسال
+                  </button>
+                </div>
+              </form>
             `
             }
           </div>
@@ -949,214 +1153,3 @@ function renderAdminSupportSafe() {
     </div>
   `;
 }
-
-/* ========== Reviews Management: per-product view + auto sort ========== */
-
-function renderAdminReviews() {
-  const reviews = Array.isArray(state.reviews) ? state.reviews : [];
-
-  const pendingAll = reviews.filter(r => r.status === 'pending');
-  const approvedAll = reviews.filter(r => r.status === 'approved');
-
-  const byProduct = {};
-  reviews.forEach(r => {
-    const pid = r.product_id || 'unknown';
-    if (!byProduct[pid]) byProduct[pid] = [];
-    byProduct[pid].push(r);
-  });
-
-  const productsWithReviews = Object.keys(byProduct).map(pid => {
-    const list = byProduct[pid];
-    const product = (state.products || []).find(p => p.id === pid) || {};
-    const latest = list.reduce((max, r) => {
-      const t = Number(r.created_at || 0);
-      return t > max ? t : max;
-    }, 0);
-    const pendingCount = list.filter(r => r.status === 'pending').length;
-    return {
-      id: pid,
-      title: product.title || `محصول ${pid}`,
-      image: product.image || product.main_image || '',
-      total: list.length,
-      pending: pendingCount,
-      latestAt: latest
-    };
-  });
-
-  productsWithReviews.sort((a, b) => (b.latestAt || 0) - (a.latestAt || 0));
-
-  if (!state.adminReviewsSelectedProductId && productsWithReviews.length > 0) {
-    state.adminReviewsSelectedProductId = productsWithReviews[0].id;
-  }
-
-  const activeProductId = state.adminReviewsSelectedProductId;
-  const activeReviews = activeProductId ? (byProduct[activeProductId] || []) : [];
-
-  function buildTree(list) {
-    const map = {};
-    list.forEach(r => (map[r.id] = { ...r, children: [] }));
-    const roots = [];
-
-    list.forEach(r => {
-      if (r.parent) {
-        if (map[r.parent]) map[r.parent].children.push(map[r.id]);
-      } else {
-        roots.push(map[r.id]);
-      }
-    });
-
-    return roots;
-  }
-
-  const tree = buildTree(activeReviews);
-
-  function renderItem(r, depth = 0) {
-    return `
-      <div class="glass rounded-2xl p-4 mb-3 ml-${Math.min(depth, 4) * 4}">
-        <div class="flex items-center justify-between mb-2">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-sm">
-              ${(r.user_name || 'کاربر')[0]}
-            </div>
-            <div>
-              <div class="text-sm font-semibold">${r.user_name || 'کاربر'}</div>
-              <div class="text-[11px] text-white/40">
-                ${utils && utils.formatDateTime ? utils.formatDateTime(r.created_at) : (r.created_at || '')}
-              </div>
-            </div>
-          </div>
-
-          <span class="badge ${r.status === 'pending' ? 'badge-processing' : 'badge-delivered'}">
-            ${r.status === 'pending' ? 'در انتظار' : 'تأیید شده'}
-          </span>
-        </div>
-
-        ${
-          r.rating
-            ? `<div class="flex items-center gap-1 mb-2 text-amber-400 text-xs">
-                 ${utils && utils.renderStars ? utils.renderStars(r.rating, 'text-xs') : '⭐'.repeat(r.rating)}
-                 <span class="text-white/60">(${r.rating})</span>
-               </div>`
-            : ''
-        }
-
-        <p class="text-sm text-white/80 mb-3 leading-relaxed">${r.text}</p>
-
-        <div class="flex items-center gap-3 mb-3 text-xs text-white/50">
-          <span>👍 ${r.likes || 0}</span>
-          <span>👎 ${r.dislikes || 0}</span>
-        </div>
-
-        <div class="flex flex-wrap gap-2 mb-2">
-          ${
-            r.status === 'pending'
-              ? `<button onclick="approveReview('${r.id}')" class="btn-success px-4 py-2 rounded-xl text-xs" type="button">تأیید</button>`
-              : ''
-          }
-          <button onclick="deleteReview('${r.id}')" class="btn-danger px-4 py-2 rounded-xl text-xs" type="button">حذف</button>
-          <button onclick="toggleReplyBox('${r.id}')" class="btn-ghost px-4 py-2 rounded-xl text-xs" type="button">پاسخ مدیر</button>
-        </div>
-
-        <form id="reply-box-${r.id}" class="hidden mt-3 space-y-2"
-              onsubmit="adminReply(event, '${r.id}', '${r.product_id}')">
-          <textarea name="text" class="input-style w-full text-sm" rows="2"
-            placeholder="پاسخ مدیر..."></textarea>
-          <div class="flex justify-end">
-            <button class="btn-primary px-4 py-2 rounded-xl text-xs" type="submit">ارسال پاسخ</button>
-          </div>
-        </form>
-
-        ${r.children.map(c => renderItem(c, depth + 1)).join('')}
-      </div>
-    `;
-  }
-
-  return `
-    <div class="animate-fade">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl lg:text-3xl font-black">مدیریت نظرات محصولات</h1>
-        <div class="flex flex-wrap gap-3 text-xs lg:text-sm">
-          <span class="px-3 py-1 rounded-full bg-white/5 text-white/70">
-            کل نظرات: ${reviews.length}
-          </span>
-          <span class="px-3 py-1 rounded-full bg-amber-500/10 text-amber-300">
-            در انتظار: ${pendingAll.length}
-          </span>
-          <span class="px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-300">
-            تأیید شده: ${approvedAll.length}
-          </span>
-        </div>
-      </div>
-
-      ${
-        productsWithReviews.length === 0
-          ? `
-        <div class="glass rounded-2xl p-10 text-center text-sm text-white/60">
-          هنوز نظری ثبت نشده است.
-        </div>
-        `
-          : `
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <!-- لیست محصولات -->
-          <div class="glass rounded-2xl p-4 lg:col-span-1 max-h-[70vh] overflow-y-auto">
-            <h2 class="font-bold mb-3 text-sm flex items-center gap-2">
-              <span>📦</span><span>محصولات دارای نظر</span>
-            </h2>
-            <div class="space-y-2">
-              ${productsWithReviews
-                .map(p => `
-                  <button
-                    type="button"
-                    onclick="state.adminReviewsSelectedProductId='${p.id}'; render();"
-                    class="w-full text-right glass rounded-xl px-3 py-3 flex items-center gap-3 text-xs transition-all ${
-                      activeProductId === p.id ? 'bg-violet-500/20 border border-violet-400' : 'hover:bg-white/5'
-                    }"
-                  >
-                    <div class="w-10 h-10 rounded-lg overflow-hidden bg-white/5 flex-shrink-0 flex items-center justify-center">
-                      ${
-                        p.image
-                          ? `<img src="${p.image}" class="w-full h-full object-cover">`
-                          : '📦'
-                      }
-                    </div>
-                    <div class="flex-1 min-w-0">
-                      <div class="font-semibold line-clamp-1">${p.title}</div>
-                      <div class="text-[11px] text-white/50 mt-0.5">
-                        ${p.total} نظر
-                        ${
-                          p.pending > 0
-                            ? `<span class="ml-1 text-amber-300">(در انتظار: ${p.pending})</span>`
-                            : ''
-                        }
-                      </div>
-                    </div>
-                  </button>
-                `)
-                .join('')}
-            </div>
-          </div>
-
-          <!-- درخت نظرات محصول فعال -->
-          <div class="glass rounded-2xl p-4 lg:col-span-2 max-h-[70vh] overflow-y-auto">
-            ${
-              !activeProductId
-                ? `<div class="text-sm text-white/60">محصولی انتخاب نشده است.</div>`
-                : tree.length === 0
-                ? `<div class="text-sm text-white/60">برای این محصول نظری ثبت نشده است.</div>`
-                : tree.map(r => renderItem(r, 0)).join('')
-            }
-          </div>
-        </div>
-        `
-      }
-    </div>
-  `;
-}
-
-/* ========== Expose to window if needed ========== */
-
-window.renderAdminPanel = renderAdminPanel;
-window.renderAdminOrdersSafe = renderAdminOrdersSafe;
-window.renderAdminCategoriesEditor = renderAdminCategoriesEditor;
-window.renderAdminSupportSafe = renderAdminSupportSafe;
-window.renderAdminReviews = renderAdminReviews;
